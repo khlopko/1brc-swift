@@ -14,7 +14,8 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "1brc-swift"
+            name: "1brc-swift",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency=complete")]
         )
     ]
 )

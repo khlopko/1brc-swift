@@ -7,5 +7,5 @@ tried to make it run in reasonable time.
 
 Currently, I am a bit violating rule of rounding data, since I do not keep all the points.
 
-So far, **running time is about 2 minutes 45 seconds on MacBook Pro M1*.
+Right now processes in ~25s by using all the cores to parallelize work.
 
