@@ -7,5 +7,5 @@ tried to make it run in reasonable time.
 
 Currently, I am a bit violating rule of rounding data, since I do not keep all the points.
 
-Right now processes in ~25s by using all the cores to parallelize work.
+Right now processes in ~10s by using all the cores to parallelize work.
 
