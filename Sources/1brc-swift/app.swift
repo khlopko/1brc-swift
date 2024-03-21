@@ -9,14 +9,8 @@ let path = "../1brc/measurements.txt"
 struct Main {
 
     static func main() async throws {
-        let begin = CFAbsoluteTimeGetCurrent()
-        defer {
-            let duration = CFAbsoluteTimeGetCurrent() - begin
-            print("Time elapsed: \(duration) seconds")
-        }
-
         let results = await withTaskGroup(of: [Int: Measurement].self) { group in
-            let totalChunks: UInt64 = 128
+            let totalChunks: UInt64 = 2048
             let file = fopen(path, "r")!
             defer {
                 fclose(file)
@@ -53,10 +47,9 @@ struct Main {
             }
             var partialResults: [Int: Measurement] = Dictionary(minimumCapacity: 500)
             for await result in group {
-                for (name, measurement) in result {
-                    let hash = name.hashValue
-                    if let existing = partialResults[hash] {
-                        partialResults[hash] = Measurement(
+                for (key, measurement) in result {
+                    if let existing = partialResults[key] {
+                        partialResults[key] = Measurement(
                             name: existing.name,
                             min: min(existing.min, measurement.min),
                             avg: existing.avg + measurement.avg,
@@ -64,7 +57,7 @@ struct Main {
                             count: existing.count + measurement.count
                         )
                     } else {
-                        partialResults[hash] = measurement
+                        partialResults[key] = measurement
                     }
                 }
             }
@@ -77,14 +70,14 @@ struct Main {
 
 struct Measurement {
     let name: ArraySlice<UInt8>
-    var min: Int32
-    var avg: Int32
-    var max: Int32
-    var count: Int32
+    let min: Int
+    let avg: Int
+    let max: Int
+    let count: Int
 }
 
 extension Measurement {
-    @inlinable
+    @inline(__always)
     static func display(results: borrowing [Int: Measurement]) {
         print("{", terminator: "")
         let prepared: [(String, Measurement)] = results.map { (String(cString: Array($1.name) + [0]), $1) }
@@ -108,25 +101,28 @@ extension Measurement {
 }
 
 actor ReadByChunks {
-    let file: UnsafeMutablePointer<FILE> = fopen(path, "r")!
 
+    @inline(__always)
     func run(_ chi: Int, offset: Int, chunkSize: Int) -> [UInt8] {
+        let file: UnsafeMutablePointer<FILE> = fopen(path, "r")!
         fseek(file, offset, SEEK_SET)
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: chunkSize, alignment: MemoryLayout<UInt8>.alignment)
         fread(buffer, 1, chunkSize, file)
         let bytes = buffer.bindMemory(to: UInt8.self, capacity: chunkSize)
         let data = Array(UnsafeBufferPointer(start: bytes, count: chunkSize))
         buffer.deallocate()
+        fclose(file)
         return data
     }
 }
 
 actor ParseLines {
-    func run(data: borrowing [UInt8]) -> [Int: Measurement] {
+    @inline(__always)
+    func run(data: consuming [UInt8]) -> [Int: Measurement] {
         var results: [Int: Measurement] = Dictionary(minimumCapacity: 500)
         var i = 0
-        var temp: Int32 = 0
-        var sign: Int32 = 1
+        var temp: Int = 0
+        var sign: Int = 1
         var k = i
         var name: ArraySlice<UInt8> = []
         let mask: Int = 0x7FFFFFFF
@@ -146,14 +142,14 @@ actor ParseLines {
                 sign = -1
                 i += 1
             }
-            while i < data.count && data[i] != 10 {
-                if data[i] == 46 {
-                    i += 1
-                }
-                temp = temp * 10 + Int32(data[i] - 48)
+            while data[i] != 46 {
+                temp = temp * 10 + Int(data[i]) - 48
                 i += 1
             }
+            i += 1 // skip the dot
+            temp = temp * 10 + Int(data[i]) - 48
             temp *= sign
+            i += 1 // skip the newline
             if let measurement = results[hash] {
                 results[hash] = Measurement(
                     name: name,
