@@ -14,3 +14,8 @@ Benchmark 1: .build/release/1brc-swift
   Range (min … max):    8.904 s … 10.077 s    10 runs
 ```
 
+## How to run
+```sh
+swift build -c release && time .build/release/1brc-swift > /dev/null
+```
+

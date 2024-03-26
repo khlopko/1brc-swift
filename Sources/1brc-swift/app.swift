@@ -2,6 +2,7 @@
 // (c) Kyrylo Khlopko
 
 import Foundation
+import System
 
 @main
 struct Main {
@@ -37,37 +38,47 @@ struct App {
     @inline(__always)
     private func process(inside group: inout TaskGroup<PartialResult>) async -> PartialResult {
         let totalChunks: UInt64 = 2048
-        let file = fopen(path, "r")!
+        let fd = try! FileDescriptor.open(path, .readOnly)
         defer {
-            fclose(file)
+            try! fd.close()
         }
-        fseek(file, 0, SEEK_END)
-        let max = ftell(file)
+        let max = try! fd.seek(offset: 0, from: .end)
         let chunkSize = Int(ceil(Double(max) / Double(totalChunks)))
-        rewind(file)
-        var offset: Int = 0
         var chunkStart: Int = 0
-        var c = fgetc(file)
-        while feof(file) == 0 {
-            chunkStart = offset
-            offset += chunkSize
-            fseek(file, offset, SEEK_SET)
-            while feof(file) == 0 && c != 10 {
-                c = fgetc(file)
+        var offset: Int = 0
+        @inline(__always)
+        func getc(_ ao: Int64) -> UInt8 {
+            let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 1, alignment: MemoryLayout<UInt8>.alignment)
+            defer {
+                buffer.deallocate()
             }
-            offset = ftell(file)
+            let pos = try! fd.read(fromAbsoluteOffset: ao, into: buffer)
+            offset += pos
+            return buffer.bindMemory(to: UInt8.self)[0]
+        }
+        var c = getc(0)
+        let readers = (0..<10).map { _ in ReadByChunks(fd: fd) }
+        while offset < max {
+            chunkStart = offset - 1
+            offset += chunkSize
+            while offset < max && c != 10 {
+                c = getc(Int64(offset))
+            }
             if offset > max {
-                offset = max
+                offset = Int(max)
             }
             let size = offset - chunkStart
+            if size == 0 {
+                break
+            }
             group.addTask { [chunkStart] in
-                let reader = ReadByChunks(path: path)
+                let reader = readers[chunkStart % 10]
                 let data = await reader.run(offset: chunkStart, chunkSize: size)
                 let parser = ParseLines()
                 let partialResult = await parser.run(data: data)
                 return partialResult
             }
-            c = fgetc(file)
+            c = getc(Int64(offset))
         }
         var partialResults = PartialResult(minimumCapacity: 500)
         for await result in group {
@@ -90,22 +101,22 @@ struct App {
 }
 
 actor ReadByChunks {
-    private let path: String
+    private let fd: FileDescriptor
 
-    init(path: String) {
-        self.path = path
+    @inline(__always)
+    init(fd: FileDescriptor) {
+        self.fd = fd
     }
 
     @inline(__always)
     func run(offset: Int, chunkSize: Int) -> [UInt8] {
-        let file: UnsafeMutablePointer<FILE> = fopen(path, "r")!
-        fseek(file, offset, SEEK_SET)
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: chunkSize, alignment: MemoryLayout<UInt8>.alignment)
-        fread(buffer, 1, chunkSize, file)
-        let bytes = buffer.bindMemory(to: UInt8.self, capacity: chunkSize)
-        let data = Array(UnsafeBufferPointer(start: bytes, count: chunkSize))
-        buffer.deallocate()
-        fclose(file)
+        let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: chunkSize, alignment: MemoryLayout<UInt8>.alignment)
+        defer {
+            buffer.deallocate()
+        }
+        _ = try! fd.read(fromAbsoluteOffset: Int64(offset), into: buffer)
+        let bytes = buffer.bindMemory(to: UInt8.self)
+        let data = Array(bytes)
         return data
     }
 }
