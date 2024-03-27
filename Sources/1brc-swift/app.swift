@@ -1,17 +1,26 @@
 // 1brc implementation in Swift
 // (c) Kyrylo Khlopko
 
-import Foundation
-import System
+import Foundation // formatted printing
+import System // file descriptor
 
 @main
 struct Main {
     static func main() async {
-        let path = "../1brc/measurements.txt"
+        let path = CommandLine.arguments.last!
         let app = App(path: path)
         await app.run()
     }
 }
+
+
+// 10k version has 10k unique stations, so we need a relative capacity of the dictionary,
+// and since dictionary usually grows by doubling, we need to set the initial capacity as power of two.
+private let capacity = 1 << 14
+
+// FNV-1a hash constants for 64-bit hash
+private let fnv1aBasis: UInt64 = 14695981039346656037
+private let fnv1aPrime: UInt64 = 1099511628211
 
 typealias PartialResult = [UInt64: Measurement]
 
@@ -37,50 +46,50 @@ struct App {
 
     @inline(__always)
     private func process(inside group: inout TaskGroup<PartialResult>) async -> PartialResult {
-        let totalChunks: UInt64 = 2048
+        let totalChunks: Int64 = 2048
         let fd = try! FileDescriptor.open(path, .readOnly)
         defer {
             try! fd.close()
         }
         let max = try! fd.seek(offset: 0, from: .end)
-        let chunkSize = Int(ceil(Double(max) / Double(totalChunks)))
-        var chunkStart: Int = 0
-        var offset: Int = 0
+        let chunkSize = max / totalChunks + 1
+        var chunkStart: Int64 = 0
+        var offset: Int64 = 0
         @inline(__always)
-        func getc(_ ao: Int64) -> UInt8 {
+        func getc() -> UInt8 {
             let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 1, alignment: MemoryLayout<UInt8>.alignment)
             defer {
                 buffer.deallocate()
             }
-            let pos = try! fd.read(fromAbsoluteOffset: ao, into: buffer)
-            offset += pos
+            let pos = try! fd.read(fromAbsoluteOffset: offset, into: buffer)
+            offset += Int64(pos)
             return buffer.bindMemory(to: UInt8.self)[0]
         }
-        var c = getc(0)
+        var c = getc()
         let readers = (0..<10).map { _ in ReadByChunks(fd: fd) }
         while offset < max {
             chunkStart = offset - 1
             offset += chunkSize
             while offset < max && c != 10 {
-                c = getc(Int64(offset))
+                c = getc()
             }
             if offset > max {
-                offset = Int(max)
+                offset = max
             }
             let size = offset - chunkStart
             if size == 0 {
                 break
             }
             group.addTask { [chunkStart] in
-                let reader = readers[chunkStart % 10]
-                let data = await reader.run(offset: chunkStart, chunkSize: size)
+                let reader = readers[Int(chunkStart) % 10]
+                let data = await reader.run(offset: chunkStart, chunkSize: Int(size))
                 let parser = ParseLines()
                 let partialResult = await parser.run(data: data)
                 return partialResult
             }
-            c = getc(Int64(offset))
+            c = getc()
         }
-        var partialResults = PartialResult(minimumCapacity: 500)
+        var partialResults = PartialResult(minimumCapacity: capacity)
         for await result in group {
             for (key, measurement) in result {
                 if let existing = partialResults[key] {
@@ -109,25 +118,23 @@ actor ReadByChunks {
     }
 
     @inline(__always)
-    func run(offset: Int, chunkSize: Int) -> [UInt8] {
+    func run(offset: Int64, chunkSize: Int) -> [UInt8] {
         let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: chunkSize, alignment: MemoryLayout<UInt8>.alignment)
         defer {
             buffer.deallocate()
         }
-        _ = try! fd.read(fromAbsoluteOffset: Int64(offset), into: buffer)
+        _ = try! fd.read(fromAbsoluteOffset: offset, into: buffer)
         let bytes = buffer.bindMemory(to: UInt8.self)
         let data = Array(bytes)
         return data
     }
 }
 
-private let fnv1aBasis: UInt64 = 14695981039346656037
-private let fnv1aPrime: UInt64 = 1099511628211
 
 actor ParseLines {
     @inline(__always)
     func run(data: consuming [UInt8]) -> PartialResult {
-        var results = PartialResult(minimumCapacity: 500)
+        var results = PartialResult(minimumCapacity: capacity)
         var i = 0
         var temp: Int = 0
         var sign: Int = 1
